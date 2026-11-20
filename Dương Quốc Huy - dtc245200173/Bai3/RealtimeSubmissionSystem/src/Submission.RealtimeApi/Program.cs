@@ -1,4 +1,7 @@
+using Microsoft.AspNetCore.SignalR;
+
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddSignalR();
 var app = builder.Build();
 
 // Du lieu mau duoc luu trong bo nho cua tien trinh API.
@@ -88,7 +91,21 @@ app.MapGet("/api/submissions/{submissionId:guid}", (Guid submissionId) =>
     return Results.Ok(submission);
 });
 
+app.MapHub<SubmissionHub>("/hubs/submissions");
 app.Run();
+
+sealed class SubmissionHub(ILogger<SubmissionHub> logger) : Hub
+{
+    public Task WatchSubmission(Guid submissionId)
+    {
+        logger.LogInformation("[Hub] {ConnectionId} theo doi {SubmissionId}", Context.ConnectionId, submissionId);
+        return Groups.AddToGroupAsync(Context.ConnectionId, GroupFor(submissionId));
+    }
+
+    internal static string GroupFor(Guid id) => $"submission:{id}";
+}
+
+record SubmissionStatusMessage(Guid SubmissionId, string Status, DateTimeOffset UpdatedAt);
 
 record AssignmentDto(int Id, string Title, string Description, bool IsOpen);
 
