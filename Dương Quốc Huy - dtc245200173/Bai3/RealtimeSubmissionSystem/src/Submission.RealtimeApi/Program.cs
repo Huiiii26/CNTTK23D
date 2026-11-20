@@ -37,7 +37,7 @@ app.MapGet("/api/assignments/{assignmentId:int}", (int assignmentId) =>
 });
 
 app.MapPost("/api/assignments/{assignmentId:int}/submissions",
-    (int assignmentId, CreateSubmissionRequest request) =>
+    (int assignmentId, CreateSubmissionRequest request, IHubContext<SubmissionHub> hub) =>
     {
         var assignment = assignments.FirstOrDefault(item => item.Id == assignmentId);
 
@@ -75,6 +75,7 @@ app.MapPost("/api/assignments/{assignmentId:int}/submissions",
             UpdatedAt: now);
 
         submissions[submission.Id] = submission;
+        _ = GradeAsync(submission, hub, app.Logger, app.Lifetime.ApplicationStopping);
 
         return Results.Created($"/api/submissions/{submission.Id}", submission);
     });
@@ -93,6 +94,43 @@ app.MapGet("/api/submissions/{submissionId:guid}", (Guid submissionId) =>
 
 app.MapHub<SubmissionHub>("/hubs/submissions");
 app.Run();
+
+async Task GradeAsync(SubmissionDto submission, IHubContext<SubmissionHub> hub,
+    ILogger logger, CancellationToken stopping)
+{
+    try
+    {
+        await Task.Delay(TimeSpan.FromSeconds(1), stopping);
+        await UpdateStatusAsync(submission, "processing", hub, logger, stopping);
+        await Task.Delay(TimeSpan.FromSeconds(2), stopping);
+        var finalStatus = submission.RepositoryUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+            ? "graded"
+            : "failed";
+        await UpdateStatusAsync(submission, finalStatus, hub, logger, stopping);
+    }
+    catch (OperationCanceledException) when (stopping.IsCancellationRequested)
+    {
+    }
+}
+
+async Task UpdateStatusAsync(SubmissionDto submission, string status,
+    IHubContext<SubmissionHub> hub, ILogger logger, CancellationToken stopping)
+{
+    var updated = submission with { Status = status, UpdatedAt = DateTimeOffset.UtcNow };
+    submissions[updated.Id] = updated;
+
+    var message = new SubmissionStatusMessage(updated.Id, updated.Status, updated.UpdatedAt);
+    try
+    {
+        await hub.Clients.Group(SubmissionHub.GroupFor(updated.Id))
+            .SendAsync("SubmissionStatusChanged", message, stopping);
+        logger.LogInformation("[Push] {SubmissionId} -> {Status}", updated.Id, status);
+    }
+    catch (Exception error) when (!stopping.IsCancellationRequested)
+    {
+        logger.LogWarning(error, "Khong gui duoc thong bao cho {SubmissionId}", updated.Id);
+    }
+}
 
 sealed class SubmissionHub(ILogger<SubmissionHub> logger) : Hub
 {
